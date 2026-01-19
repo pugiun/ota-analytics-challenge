@@ -1,5 +1,11 @@
-import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
+import {
+  getClientIdentifier,
+  RATE_LIMIT_CONFIGS,
+  rateLimit,
+  rateLimitHeaders,
+} from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 
 // Configure edge runtime for low latency
@@ -46,7 +52,17 @@ function calculateDateRange(option: DateRangeOption): {
   previousEnd: Date;
 } {
   const now = new Date();
-  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+  const today = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+      23,
+      59,
+      59,
+      999,
+    ),
+  );
 
   let currentStart: Date;
   let currentEnd: Date;
@@ -83,11 +99,17 @@ function calculateDateRange(option: DateRangeOption): {
       break;
     }
     case "month": {
-      currentStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+      currentStart = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0),
+      );
       currentEnd = today;
 
-      previousStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1, 0, 0, 0, 0));
-      previousEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0, 23, 59, 59, 999));
+      previousStart = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1, 0, 0, 0, 0),
+      );
+      previousEnd = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0, 23, 59, 59, 999),
+      );
       break;
     }
   }
@@ -107,6 +129,29 @@ function calculateDateRange(option: DateRangeOption): {
  */
 export async function GET(request: NextRequest) {
   const startTime = Date.now();
+
+  // Check rate limit
+  const clientId = getClientIdentifier(request);
+  const rateLimitResult = rateLimit(clientId, RATE_LIMIT_CONFIGS.standard);
+
+  if (!rateLimitResult.success) {
+    return NextResponse.json(
+      {
+        error: "Too many requests",
+        message: "Rate limit exceeded. Please try again later.",
+        retryAfter: Math.ceil((rateLimitResult.reset - Date.now()) / 1000),
+      },
+      {
+        status: 429,
+        headers: {
+          ...rateLimitHeaders(rateLimitResult),
+          "Retry-After": Math.ceil(
+            (rateLimitResult.reset - Date.now()) / 1000,
+          ).toString(),
+        },
+      },
+    );
+  }
 
   // Create Supabase client using SSR helper (handles cookies automatically)
   const supabase = await createClient();
@@ -128,7 +173,7 @@ export async function GET(request: NextRequest) {
         headers: {
           "WWW-Authenticate": "Bearer",
         },
-      }
+      },
     );
   }
 
@@ -137,12 +182,13 @@ export async function GET(request: NextRequest) {
   if (!validation.valid) {
     return NextResponse.json(
       { error: validation.error },
-      { status: validation.status }
+      { status: validation.status },
     );
   }
 
   const { dateRange } = validation;
-  const { currentStart, currentEnd, previousStart, previousEnd } = calculateDateRange(dateRange);
+  const { currentStart, currentEnd, previousStart, previousEnd } =
+    calculateDateRange(dateRange);
 
   // Fetch current period metrics
   const { data: currentMetrics, error: currentError } = await supabase
@@ -159,7 +205,7 @@ export async function GET(request: NextRequest) {
         error: "Failed to fetch metrics",
         details: currentError.message,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
@@ -177,24 +223,44 @@ export async function GET(request: NextRequest) {
         error: "Failed to fetch comparison metrics",
         details: previousError.message,
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
   // Calculate totals for trend comparison
-  const currentTotalEngagement = currentMetrics.reduce((sum, m) => sum + (m.engagement || 0), 0);
-  const currentTotalReach = currentMetrics.reduce((sum, m) => sum + (m.reach || 0), 0);
-  const previousTotalEngagement = previousMetrics.reduce((sum, m) => sum + (m.engagement || 0), 0);
-  const previousTotalReach = previousMetrics.reduce((sum, m) => sum + (m.reach || 0), 0);
+  const currentTotalEngagement = currentMetrics.reduce(
+    (sum, m) => sum + (m.engagement || 0),
+    0,
+  );
+  const currentTotalReach = currentMetrics.reduce(
+    (sum, m) => sum + (m.reach || 0),
+    0,
+  );
+  const previousTotalEngagement = previousMetrics.reduce(
+    (sum, m) => sum + (m.engagement || 0),
+    0,
+  );
+  const previousTotalReach = previousMetrics.reduce(
+    (sum, m) => sum + (m.reach || 0),
+    0,
+  );
 
   // Calculate percentage changes
-  const engagementChange = previousTotalEngagement > 0
-    ? ((currentTotalEngagement - previousTotalEngagement) / previousTotalEngagement) * 100
-    : currentTotalEngagement > 0 ? 100 : 0;
+  const engagementChange =
+    previousTotalEngagement > 0
+      ? ((currentTotalEngagement - previousTotalEngagement) /
+          previousTotalEngagement) *
+        100
+      : currentTotalEngagement > 0
+        ? 100
+        : 0;
 
-  const reachChange = previousTotalReach > 0
-    ? ((currentTotalReach - previousTotalReach) / previousTotalReach) * 100
-    : currentTotalReach > 0 ? 100 : 0;
+  const reachChange =
+    previousTotalReach > 0
+      ? ((currentTotalReach - previousTotalReach) / previousTotalReach) * 100
+      : currentTotalReach > 0
+        ? 100
+        : 0;
 
   // Calculate response time for monitoring
   const responseTime = Date.now() - startTime;
@@ -242,8 +308,10 @@ export async function GET(request: NextRequest) {
         "Server-Timing": `db;dur=${responseTime}`,
         // Indicate edge runtime
         "X-Runtime": "edge",
+        // Rate limit headers
+        ...rateLimitHeaders(rateLimitResult),
       },
-    }
+    },
   );
 }
 
@@ -262,7 +330,7 @@ export async function POST() {
       headers: {
         Allow: "GET",
       },
-    }
+    },
   );
 }
 
@@ -278,7 +346,7 @@ export async function PUT() {
       headers: {
         Allow: "GET",
       },
-    }
+    },
   );
 }
 
@@ -294,7 +362,7 @@ export async function DELETE() {
       headers: {
         Allow: "GET",
       },
-    }
+    },
   );
 }
 
@@ -310,6 +378,6 @@ export async function PATCH() {
       headers: {
         Allow: "GET",
       },
-    }
+    },
   );
 }

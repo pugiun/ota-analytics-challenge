@@ -21,7 +21,9 @@ export default async function DashboardPage() {
         <div className="mb-8 flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold">Dashboard</h1>
-            <p className="text-muted-foreground">Welcome back, {user.email}</p>
+            <p className="text-muted-foreground">
+              Welcome back, {user.user_metadata?.display_name || user.email}
+            </p>
           </div>
           <form action={signOut}>
             <Button variant="outline" type="submit">
